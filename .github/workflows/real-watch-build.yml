@@ -76,7 +76,7 @@ jobs:
       - name: Build real watchOS app
         run: |
           xcodebuild \
-            -project HotShotsWatchTest.xcodeproj \
+            -project HotShotsWatchTest/HotShotsWatchTest.xcodeproj \
             -scheme HotShotsWatchTest \
             -sdk watchsimulator \
             -configuration Debug \
