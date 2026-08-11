@@ -1,0 +1,23 @@
+name: HotShots Watch Build Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: macos-26-intel
+
+    steps:
+      - name: Check Xcode
+        run: |
+          xcodebuild -version
+          xcode-select -p
+
+      - name: Check watchOS SDK
+        run: |
+          xcodebuild -showsdks | grep -i watchos || true
+
+      - name: Report environment
+        run: |
+          sw_vers
+          xcrun simctl list runtimes | grep -i watch || true
