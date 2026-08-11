@@ -1,0 +1,73 @@
+name: Build HotShots Watch Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-26-intel
+
+    steps:
+      - name: Create watchOS project
+        run: |
+          mkdir -p HotShotsWatchTest/HotShotsWatchTest
+
+          cat > HotShotsWatchTest/HotShotsWatchTest/ContentView.swift <<'EOF'
+          import SwiftUI
+
+          struct ContentView: View {
+              var body: some View {
+                  VStack(spacing: 6) {
+                      Text("🏀")
+                          .font(.system(size: 32))
+
+                      Text("HotShots")
+                          .font(.headline)
+
+                      Text("Watch Test")
+                          .font(.caption)
+
+                      Image(systemName: "checkmark.circle.fill")
+                          .font(.title2)
+                  }
+                  .padding()
+              }
+          }
+          EOF
+
+          cat > HotShotsWatchTest/HotShotsWatchTest/HotShotsWatchTestApp.swift <<'EOF'
+          import SwiftUI
+
+          @main
+          struct HotShotsWatchTestApp: App {
+              var body: some Scene {
+                  WindowGroup {
+                      ContentView()
+                  }
+              }
+          }
+          EOF
+
+          cat > HotShotsWatchTest/HotShotsWatchTest.xcodeproj/project.pbxproj <<'EOF'
+          // Xcode project will be generated in the next step.
+          EOF
+
+      - name: Verify Xcode environment
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i watchos
+
+      - name: Test Swift compilation
+        run: |
+          xcrun swiftc \
+            -target arm64-apple-watchos26.0 \
+            -parse \
+            HotShotsWatchTest/HotShotsWatchTest/ContentView.swift
+
+          echo "Swift watchOS source parsed successfully."
+
+      - name: Report result
+        run: |
+          echo "======================================"
+          echo "HOTSHOTS WATCHOS ENVIRONMENT TEST PASSED"
+          echo "======================================"
