@@ -1,0 +1,97 @@
+name: Real HotShots Watch Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-26-intel
+
+    steps:
+      - name: Create Watch app project
+        run: |
+          mkdir -p HotShotsWatchTest/HotShotsWatchTest
+
+          cat > HotShotsWatchTest/HotShotsWatchTest/ContentView.swift <<'EOF'
+          import SwiftUI
+
+          struct ContentView: View {
+              var body: some View {
+                  VStack(spacing: 8) {
+                      Text("🏀")
+                          .font(.system(size: 32))
+
+                      Text("HotShots")
+                          .font(.headline)
+
+                      Text("Watch Test")
+                          .font(.caption)
+
+                      Image(systemName: "checkmark.circle.fill")
+                          .font(.title2)
+                  }
+                  .padding()
+              }
+          }
+          EOF
+
+          cat > HotShotsWatchTest/HotShotsWatchTest/HotShotsWatchTestApp.swift <<'EOF'
+          import SwiftUI
+
+          @main
+          struct HotShotsWatchTestApp: App {
+              var body: some Scene {
+                  WindowGroup {
+                      ContentView()
+                  }
+              }
+          }
+          EOF
+
+      - name: Create Xcode project
+        run: |
+          brew install xcodegen
+
+          cat > HotShotsWatchTest/project.yml <<'EOF'
+          name: HotShotsWatchTest
+
+          options:
+            bundleIdPrefix: com.hotshots
+
+          targets:
+            HotShotsWatchTest:
+              type: application
+              platform: watchOS
+              deploymentTarget: "26.0"
+              sources:
+                - HotShotsWatchTest
+              settings:
+                base:
+                  PRODUCT_BUNDLE_IDENTIFIER: com.hotshots.watchtest
+          EOF
+
+          cd HotShotsWatchTest
+          xcodegen generate
+
+      - name: Build real watchOS app
+        run: |
+          xcodebuild \
+            -project HotShotsWatchTest.xcodeproj \
+            -scheme HotShotsWatchTest \
+            -sdk watchsimulator \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Locate built Watch app
+        run: |
+          find ~/Library/Developer/Xcode/DerivedData \
+            -name "*.app" \
+            -type d \
+            -print
+
+      - name: Success
+        run: |
+          echo "======================================"
+          echo "REAL HOTSHOTS WATCH APP BUILD PASSED"
+          echo "======================================"
