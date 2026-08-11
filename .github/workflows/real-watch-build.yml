@@ -25,10 +25,104 @@ jobs:
           }
           EOF
 
-          cat > HotShotsWatchTest/HotShotsWatchTest/ContentView.swift <<'EOF'
-          import SwiftUI
+          cat > HotShotsWatchTest/HotShotsWatchTest/WatchSessionManager.swift <<'EOF'
+          import Foundation
+          import WatchConnectivity
 
-          // MARK: - Models
+          final class WatchSessionManager: NSObject, ObservableObject {
+
+              static let shared = WatchSessionManager()
+
+              @Published private(set) var accessToken: String?
+
+              private let tokenKey = "hotshots_access_token"
+
+              private override init() {
+                  super.init()
+                  accessToken = UserDefaults.standard.string(forKey: tokenKey)
+                  activate()
+              }
+
+              func activate() {
+                  guard WCSession.isSupported() else {
+                      return
+                  }
+
+                  let session = WCSession.default
+                  session.delegate = self
+                  session.activate()
+              }
+
+              func clearToken() {
+                  UserDefaults.standard.removeObject(forKey: tokenKey)
+
+                  DispatchQueue.main.async {
+                      self.accessToken = nil
+                  }
+              }
+
+              private func saveToken(_ token: String) {
+                  UserDefaults.standard.set(token, forKey: tokenKey)
+
+                  DispatchQueue.main.async {
+                      self.accessToken = token
+                  }
+              }
+          }
+
+          extension WatchSessionManager: WCSessionDelegate {
+
+              func session(
+                  _ session: WCSession,
+                  activationDidCompleteWith activationState: WCSessionActivationState,
+                  error: Error?
+              ) {
+                  if let error {
+                      print("WatchConnectivity activation error: \(error)")
+                  }
+
+                  // Ask the iPhone for the current authentication state.
+                  if activationState == .activated {
+                      session.sendMessage(
+                          ["request": "access_token"],
+                          replyHandler: { response in
+                              if let token = response["access_token"] as? String {
+                                  self.saveToken(token)
+                              }
+                          },
+                          errorHandler: { error in
+                              print("Token request failed: \(error)")
+                          }
+                      )
+                  }
+              }
+
+              func session(
+                  _ session: WCSession,
+                  didReceiveMessage message: [String : Any]
+              ) {
+                  guard let token = message["access_token"] as? String else {
+                      return
+                  }
+
+                  saveToken(token)
+              }
+
+              func session(
+                  _ session: WCSession,
+                  didReceiveApplicationContext applicationContext: [String : Any]
+              ) {
+                  guard let token = applicationContext["access_token"] as? String else {
+                      return
+                  }
+
+                  saveToken(token)
+              }
+          }
+          EOF
+
+          cat > HotShotsWatchTest/HotShotsWatchTest/HotShotsAPI.swift <<'EOF'
+          import Foundation
 
           struct Player: Identifiable, Codable {
               let id: String
@@ -47,7 +141,9 @@ jobs:
               case freeThrow = "Free Throws"
               case hotShot = "Hot Shot"
 
-              var id: String { rawValue }
+              var id: String {
+                  rawValue
+              }
 
               var icon: String {
                   switch self {
@@ -71,147 +167,6 @@ jobs:
               var spot: Int
               var attempt: Int
               var total: Int
-          }
-
-          // MARK: - API
-
-          final class HotShotsAPI {
-              static let shared = HotShotsAPI()
-
-              private let baseURL = "https://skilled-hot-shot-track.base44.app"
-              
-              // Authentication will be supplied by the iPhone/watch handoff.
-              // Keeping this separate means we can add WatchConnectivity
-              // without rewriting the workout system.
-              var accessToken: String?
-
-              private init() {}
-
-              func listPlayers() async throws -> [Player] {
-                  guard let url = URL(string: "\(baseURL)/functions/watchListPlayers") else {
-                      throw APIError.invalidURL
-                  }
-
-                  var request = URLRequest(url: url)
-                  request.httpMethod = "POST"
-                  request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                  addAuth(to: &request)
-
-                  let (data, response) = try await URLSession.shared.data(for: request)
-                  try validate(response)
-
-                  let decoded = try JSONDecoder().decode(PlayerResponse.self, from: data)
-                  return decoded.players
-              }
-
-              func startSession(
-                  playerID: String,
-                  workout: WorkoutType
-              ) async throws -> StartSessionResponse {
-                  guard let url = URL(string: "\(baseURL)/functions/watchStartSession") else {
-                      throw APIError.invalidURL
-                  }
-
-                  var request = URLRequest(url: url)
-                  request.httpMethod = "POST"
-                  request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                  addAuth(to: &request)
-
-                  var body: [String: Any] = [
-                      "player_id": playerID
-                  ]
-
-                  switch workout {
-                  case .court:
-                      body["session_type"] = "full_shooting"
-                      body["shots_per_spot"] = 1
-                      body["three_point_distance"] = "19_9"
-
-                  case .freeThrow:
-                      body["session_type"] = "free_throw"
-                      body["free_throw_count"] = 10
-
-                  case .hotShot:
-                      body["session_type"] = "hot_shot"
-                      body["hot_shot_num_spots"] = 5
-                      body["hot_shot_shots_per_spot"] = 5
-                  }
-
-                  request.httpBody = try JSONSerialization.data(
-                      withJSONObject: body
-                  )
-
-                  let (data, response) = try await URLSession.shared.data(for: request)
-                  try validate(response)
-
-                  return try JSONDecoder().decode(
-                      StartSessionResponse.self,
-                      from: data
-                  )
-              }
-
-              func recordShot(
-                  sessionID: String,
-                  playerID: String,
-                  state: ShotState,
-                  result: ShotResult,
-                  shotType: String
-              ) async throws -> RecordShotResponse {
-                  guard let url = URL(string: "\(baseURL)/functions/watchRecordShot") else {
-                      throw APIError.invalidURL
-                  }
-
-                  var request = URLRequest(url: url)
-                  request.httpMethod = "POST"
-                  request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                  addAuth(to: &request)
-
-                  let body: [String: Any] = [
-                      "session_id": sessionID,
-                      "player_id": playerID,
-                      "session_type": state.phase == "free_throw"
-                          ? "free_throw"
-                          : state.phase == "hot_shot"
-                              ? "hot_shot"
-                              : "full_shooting",
-                      "phase": state.phase,
-                      "spot_number": state.spot,
-                      "attempt_number": state.attempt,
-                      "result": result.rawValue,
-                      "shot_type": shotType
-                  ]
-
-                  request.httpBody = try JSONSerialization.data(
-                      withJSONObject: body
-                  )
-
-                  let (data, response) = try await URLSession.shared.data(for: request)
-                  try validate(response)
-
-                  return try JSONDecoder().decode(
-                      RecordShotResponse.self,
-                      from: data
-                  )
-              }
-
-              private func addAuth(to request: inout URLRequest) {
-                  if let accessToken {
-                      request.setValue(
-                          "Bearer \(accessToken)",
-                          forHTTPHeaderField: "Authorization"
-                      )
-                  }
-              }
-
-              private func validate(_ response: URLResponse) throws {
-                  guard let http = response as? HTTPURLResponse else {
-                      throw APIError.invalidResponse
-                  }
-
-                  guard (200...299).contains(http.statusCode) else {
-                      throw APIError.serverError(http.statusCode)
-                  }
-              }
           }
 
           struct PlayerResponse: Codable {
@@ -262,12 +217,216 @@ jobs:
           enum APIError: Error {
               case invalidURL
               case invalidResponse
+              case unauthorized
               case serverError(Int)
           }
 
-          // MARK: - Main View
+          final class HotShotsAPI {
+
+              static let shared = HotShotsAPI()
+
+              private let baseURL =
+                  "https://skilled-hot-shot-track.base44.app"
+
+              private init() {}
+
+              private var token: String? {
+                  WatchSessionManager.shared.accessToken
+              }
+
+              func listPlayers() async throws -> [Player] {
+
+                  guard let url = URL(
+                      string: "\(baseURL)/functions/watchListPlayers"
+                  ) else {
+                      throw APIError.invalidURL
+                  }
+
+                  var request = URLRequest(url: url)
+                  request.httpMethod = "POST"
+
+                  request.setValue(
+                      "application/json",
+                      forHTTPHeaderField: "Content-Type"
+                  )
+
+                  addAuthentication(to: &request)
+
+                  let (data, response) =
+                      try await URLSession.shared.data(for: request)
+
+                  try validate(response)
+
+                  return try JSONDecoder()
+                      .decode(PlayerResponse.self, from: data)
+                      .players
+              }
+
+              func startSession(
+                  playerID: String,
+                  workout: WorkoutType
+              ) async throws -> StartSessionResponse {
+
+                  guard let url = URL(
+                      string: "\(baseURL)/functions/watchStartSession"
+                  ) else {
+                      throw APIError.invalidURL
+                  }
+
+                  var request = URLRequest(url: url)
+                  request.httpMethod = "POST"
+
+                  request.setValue(
+                      "application/json",
+                      forHTTPHeaderField: "Content-Type"
+                  )
+
+                  addAuthentication(to: &request)
+
+                  var body: [String: Any] = [
+                      "player_id": playerID
+                  ]
+
+                  switch workout {
+
+                  case .court:
+                      body["session_type"] = "full_shooting"
+                      body["shots_per_spot"] = 1
+                      body["three_point_distance"] = "19_9"
+
+                  case .freeThrow:
+                      body["session_type"] = "free_throw"
+                      body["free_throw_count"] = 10
+
+                  case .hotShot:
+                      body["session_type"] = "hot_shot"
+                      body["hot_shot_num_spots"] = 5
+                      body["hot_shot_shots_per_spot"] = 5
+                  }
+
+                  request.httpBody =
+                      try JSONSerialization.data(
+                          withJSONObject: body
+                      )
+
+                  let (data, response) =
+                      try await URLSession.shared.data(for: request)
+
+                  try validate(response)
+
+                  return try JSONDecoder()
+                      .decode(
+                          StartSessionResponse.self,
+                          from: data
+                      )
+              }
+
+              func recordShot(
+                  sessionID: String,
+                  playerID: String,
+                  state: ShotState,
+                  result: ShotResult,
+                  shotType: String
+              ) async throws -> RecordShotResponse {
+
+                  guard let url = URL(
+                      string: "\(baseURL)/functions/watchRecordShot"
+                  ) else {
+                      throw APIError.invalidURL
+                  }
+
+                  var request = URLRequest(url: url)
+                  request.httpMethod = "POST"
+
+                  request.setValue(
+                      "application/json",
+                      forHTTPHeaderField: "Content-Type"
+                  )
+
+                  addAuthentication(to: &request)
+
+                  let sessionType: String
+
+                  switch state.phase {
+                  case "free_throw":
+                      sessionType = "free_throw"
+                  case "hot_shot":
+                      sessionType = "hot_shot"
+                  default:
+                      sessionType = "full_shooting"
+                  }
+
+                  let body: [String: Any] = [
+                      "session_id": sessionID,
+                      "player_id": playerID,
+                      "session_type": sessionType,
+                      "phase": state.phase,
+                      "spot_number": state.spot,
+                      "attempt_number": state.attempt,
+                      "result": result.rawValue,
+                      "shot_type": shotType
+                  ]
+
+                  request.httpBody =
+                      try JSONSerialization.data(
+                          withJSONObject: body
+                      )
+
+                  let (data, response) =
+                      try await URLSession.shared.data(for: request)
+
+                  try validate(response)
+
+                  return try JSONDecoder()
+                      .decode(
+                          RecordShotResponse.self,
+                          from: data
+                      )
+              }
+
+              private func addAuthentication(
+                  to request: inout URLRequest
+              ) {
+
+                  guard let token else {
+                      return
+                  }
+
+                  request.setValue(
+                      "Bearer \(token)",
+                      forHTTPHeaderField: "Authorization"
+                  )
+              }
+
+              private func validate(
+                  _ response: URLResponse
+              ) throws {
+
+                  guard let http =
+                      response as? HTTPURLResponse
+                  else {
+                      throw APIError.invalidResponse
+                  }
+
+                  if http.statusCode == 401 {
+                      throw APIError.unauthorized
+                  }
+
+                  guard (200...299).contains(http.statusCode)
+                  else {
+                      throw APIError.serverError(
+                          http.statusCode
+                      )
+                  }
+              }
+          }
+          EOF
+
+          cat > HotShotsWatchTest/HotShotsWatchTest/ContentView.swift <<'EOF'
+          import SwiftUI
 
           struct ContentView: View {
+
               @State private var selectedPlayer: Player?
               @State private var players: [Player] = []
               @State private var workout: WorkoutType?
@@ -276,8 +435,11 @@ jobs:
               @State private var errorMessage: String?
 
               var body: some View {
+
                   NavigationStack {
+
                       ScrollView {
+
                           VStack(spacing: 10) {
 
                               Text("🏀")
@@ -292,8 +454,12 @@ jobs:
 
                               Divider()
 
+                              connectionStatus
+
                               if let selectedPlayer {
+
                                   VStack(spacing: 2) {
+
                                       Text("PLAYER")
                                           .font(.caption2)
                                           .foregroundStyle(.secondary)
@@ -304,13 +470,22 @@ jobs:
                               }
 
                               if players.isEmpty {
+
                                   Button {
                                       loadPlayers()
                                   } label: {
-                                      Label("Load Players", systemImage: "person.2.fill")
+                                      Label(
+                                          "Load Players",
+                                          systemImage:
+                                              "person.2.fill"
+                                      )
                                   }
-                                  .buttonStyle(.borderedProminent)
+                                  .buttonStyle(
+                                      .borderedProminent
+                                  )
+
                               } else {
+
                                   playerSelector
                               }
 
@@ -320,14 +495,16 @@ jobs:
 
                               if loading {
                                   ProgressView()
-                                      .padding(.top, 4)
                               }
 
                               if let errorMessage {
+
                                   Text(errorMessage)
                                       .font(.caption2)
                                       .foregroundStyle(.red)
-                                      .multilineTextAlignment(.center)
+                                      .multilineTextAlignment(
+                                          .center
+                                      )
                               }
                           }
                           .padding(.horizontal, 8)
@@ -335,8 +512,10 @@ jobs:
                       .navigationDestination(
                           isPresented: $showWorkout
                       ) {
+
                           if let workout,
                              let selectedPlayer {
+
                               WorkoutView(
                                   player: selectedPlayer,
                                   workout: workout
@@ -345,25 +524,74 @@ jobs:
                       }
                   }
                   .task {
+
+                      WatchSessionManager.shared.activate()
+
+                      try? await Task.sleep(
+                          for: .seconds(1)
+                      )
+
                       loadPlayers()
                   }
               }
 
+              private var connectionStatus: some View {
+
+                  HStack(spacing: 5) {
+
+                      Circle()
+                          .fill(
+                              WatchSessionManager
+                                  .shared
+                                  .accessToken == nil
+                                  ? .orange
+                                  : .green
+                          )
+                          .frame(
+                              width: 7,
+                              height: 7
+                          )
+
+                      Text(
+                          WatchSessionManager
+                              .shared
+                              .accessToken == nil
+                              ? "Connecting to iPhone…"
+                              : "Connected"
+                      )
+                      .font(.caption2)
+                  }
+              }
+
               private var playerSelector: some View {
+
                   VStack(spacing: 5) {
+
                       Text("SELECT PLAYER")
                           .font(.caption2)
                           .foregroundStyle(.secondary)
 
                       ForEach(players) { player in
+
                           Button {
+
                               selectedPlayer = player
+
                           } label: {
+
                               HStack {
+
                                   Text(player.name)
+
                                   Spacer()
-                                  if selectedPlayer?.id == player.id {
-                                      Image(systemName: "checkmark")
+
+                                  if selectedPlayer?.id ==
+                                      player.id {
+
+                                      Image(
+                                          systemName:
+                                              "checkmark"
+                                      )
                                   }
                               }
                           }
@@ -373,66 +601,105 @@ jobs:
               }
 
               private var workoutMenu: some View {
+
                   VStack(spacing: 6) {
+
                       Text("START TRAINING")
                           .font(.caption2)
                           .foregroundStyle(.secondary)
-                          .padding(.top, 4)
 
-                      ForEach(WorkoutType.allCases) { item in
+                      ForEach(
+                          WorkoutType.allCases
+                      ) { item in
+
                           Button {
+
                               workout = item
                               showWorkout = true
+
                           } label: {
-                              HStack(spacing: 8) {
-                                  Image(systemName: item.icon)
+
+                              HStack {
+
+                                  Image(
+                                      systemName:
+                                          item.icon
+                                  )
+
                                   Text(item.rawValue)
                                       .font(.headline)
+
                                   Spacer()
-                                  Image(systemName: "chevron.right")
-                                      .font(.caption)
+
+                                  Image(
+                                      systemName:
+                                          "chevron.right"
+                                  )
+                                  .font(.caption)
                               }
                           }
-                          .buttonStyle(.borderedProminent)
+                          .buttonStyle(
+                              .borderedProminent
+                          )
                       }
                   }
               }
 
               private func loadPlayers() {
+
                   loading = true
                   errorMessage = nil
 
                   Task {
+
                       do {
-                          let result = try await HotShotsAPI.shared.listPlayers()
+
+                          let result =
+                              try await HotShotsAPI
+                                  .shared
+                                  .listPlayers()
 
                           await MainActor.run {
+
                               players = result
 
                               if selectedPlayer == nil {
-                                  selectedPlayer = result.first
+                                  selectedPlayer =
+                                      result.first
                               }
 
                               loading = false
                           }
+
                       } catch {
+
                           await MainActor.run {
+
                               loading = false
-                              errorMessage =
-                                  "Player connection is not ready yet."
+
+                              if case APIError.unauthorized =
+                                  error {
+
+                                  errorMessage =
+                                      "Connect HotShots on iPhone first."
+                              } else {
+
+                                  errorMessage =
+                                      "Unable to load players."
+                              }
                           }
                       }
                   }
               }
           }
 
-          // MARK: - Workout View
-
           struct WorkoutView: View {
+
               let player: Player
               let workout: WorkoutType
 
-              @Environment(\.dismiss) private var dismiss
+              @Environment(\.dismiss)
+              private var dismiss
 
               @State private var sessionID = ""
               @State private var state: ShotState?
@@ -442,7 +709,9 @@ jobs:
               @State private var errorMessage: String?
 
               var body: some View {
+
                   ScrollView {
+
                       VStack(spacing: 8) {
 
                           Text(workout.rawValue)
@@ -453,18 +722,23 @@ jobs:
                               .foregroundStyle(.secondary)
 
                           if loading {
-                              ProgressView("Starting...")
+
+                              ProgressView("Starting…")
+
                           } else if complete {
+
                               completionView
+
                           } else if let state {
+
                               shotView(state)
                           }
 
                           if let errorMessage {
+
                               Text(errorMessage)
                                   .font(.caption2)
                                   .foregroundStyle(.red)
-                                  .multilineTextAlignment(.center)
                           }
                       }
                       .padding(.horizontal, 8)
@@ -474,58 +748,97 @@ jobs:
                   }
               }
 
-              private func shotView(_ state: ShotState) -> some View {
+              private func shotView(
+                  _ state: ShotState
+              ) -> some View {
+
                   VStack(spacing: 8) {
 
-                      if workout == .court || workout == .hotShot {
-                          Text(state.phase == "hot_shot"
-                               ? "HOT SHOT"
-                               : "SPOT \(state.spot)")
-                              .font(.title3)
-                              .bold()
-                      } else {
-                          Text("FREE THROW")
-                              .font(.title3)
-                              .bold()
-                      }
+                      Text(
+                          state.phase ==
+                              "hot_shot"
+                              ? "HOT SHOT"
+                              : state.phase ==
+                                  "free_throw"
+                                  ? "FREE THROW"
+                                  : "SPOT \(state.spot)"
+                      )
+                      .font(.title3)
+                      .bold()
 
-                      Text("Shot \(state.attempt) of \(state.total)")
-                          .font(.caption)
+                      Text(
+                          "Shot \(state.attempt) of \(state.total)"
+                      )
+                      .font(.caption)
 
                       Text("\(makes)")
-                          .font(.system(size: 30, weight: .bold))
+                          .font(
+                              .system(
+                                  size: 30,
+                                  weight: .bold
+                              )
+                          )
 
                       Text("MAKES")
                           .font(.caption2)
                           .foregroundStyle(.secondary)
 
                       Button {
+
                           record(.make)
+
                       } label: {
+
                           Text("MAKE")
-                              .font(.system(size: 20, weight: .bold))
-                              .frame(maxWidth: .infinity)
+                              .font(
+                                  .system(
+                                      size: 20,
+                                      weight: .bold
+                                  )
+                              )
+                              .frame(
+                                  maxWidth: .infinity
+                              )
                       }
-                      .buttonStyle(.borderedProminent)
+                      .buttonStyle(
+                          .borderedProminent
+                      )
                       .tint(.green)
 
                       Button {
+
                           record(.miss)
+
                       } label: {
+
                           Text("MISS")
-                              .font(.system(size: 20, weight: .bold))
-                              .frame(maxWidth: .infinity)
+                              .font(
+                                  .system(
+                                      size: 20,
+                                      weight: .bold
+                                  )
+                              )
+                              .frame(
+                                  maxWidth: .infinity
+                              )
                       }
-                      .buttonStyle(.borderedProminent)
+                      .buttonStyle(
+                          .borderedProminent
+                      )
                       .tint(.red)
                   }
               }
 
               private var completionView: some View {
+
                   VStack(spacing: 8) {
-                      Image(systemName: "checkmark.circle.fill")
-                          .font(.system(size: 36))
-                          .foregroundStyle(.green)
+
+                      Image(
+                          systemName:
+                              "checkmark.circle.fill"
+                      )
+                      .font(.system(size: 36))
+                      .foregroundStyle(.green)
 
                       Text("WORKOUT COMPLETE")
                           .font(.headline)
@@ -537,85 +850,144 @@ jobs:
                       Button("Done") {
                           dismiss()
                       }
-                      .buttonStyle(.borderedProminent)
+                      .buttonStyle(
+                          .borderedProminent
+                      )
                   }
               }
 
               private func startWorkout() async {
+
                   do {
-                      let result = try await HotShotsAPI.shared.startSession(
-                          playerID: player.id,
-                          workout: workout
-                      )
+
+                      let result =
+                          try await HotShotsAPI
+                              .shared
+                              .startSession(
+                                  playerID:
+                                      player.id,
+                                  workout:
+                                      workout
+                              )
 
                       await MainActor.run {
-                          sessionID = result.sessionID
+
+                          sessionID =
+                              result.sessionID
 
                           state = ShotState(
-                              phase: result.next.phase,
-                              spot: result.next.spot,
-                              attempt: result.next.attempt,
-                              total: result.next.total
+                              phase:
+                                  result.next.phase,
+                              spot:
+                                  result.next.spot,
+                              attempt:
+                                  result.next.attempt,
+                              total:
+                                  result.next.total
                           )
 
-                          makes = result.makes
-                          complete = result.complete
+                          makes =
+                              result.makes
+
+                          complete =
+                              result.complete
+
                           loading = false
                       }
+
                   } catch {
+
                       await MainActor.run {
+
                           loading = false
+
                           errorMessage =
-                              "Could not start workout. Authentication still needs to be connected."
+                              "Could not start workout."
                       }
                   }
               }
 
-              private func record(_ result: ShotResult) {
-                  guard let current = state else { return }
+              private func record(
+                  _ result: ShotResult
+              ) {
 
-                  // Immediately disable the current shot by clearing state.
-                  // This prevents a double-tap from recording two shots.
+                  guard let current = state
+                  else {
+                      return
+                  }
+
+                  // Clearing the state immediately prevents
+                  // a double tap from creating two shots.
+
                   state = nil
 
                   Task {
-                      do {
-                          let shotType: String
 
-                          switch workout {
-                          case .freeThrow:
-                              shotType = "ft"
-                          case .court, .hotShot:
-                              shotType = "fg"
-                          }
+                      do {
+
+                          let shotType =
+                              workout ==
+                                  .freeThrow
+                                  ? "ft"
+                                  : "fg"
 
                           let response =
-                              try await HotShotsAPI.shared.recordShot(
-                                  sessionID: sessionID,
-                                  playerID: player.id,
-                                  state: current,
-                                  result: result,
-                                  shotType: shotType
-                              )
+                              try await HotShotsAPI
+                                  .shared
+                                  .recordShot(
+                                      sessionID:
+                                          sessionID,
+                                      playerID:
+                                          player.id,
+                                      state:
+                                          current,
+                                      result:
+                                          result,
+                                      shotType:
+                                          shotType
+                                  )
 
                           await MainActor.run {
-                              makes = response.makes
+
+                              makes =
+                                  response.makes
 
                               if response.complete {
+
                                   complete = true
+
                               } else {
-                                  state = ShotState(
-                                      phase: response.next.phase,
-                                      spot: response.next.spot,
-                                      attempt: response.next.attempt,
-                                      total: response.next.total
-                                  )
+
+                                  state =
+                                      ShotState(
+                                          phase:
+                                              response
+                                                  .next
+                                                  .phase,
+                                          spot:
+                                              response
+                                                  .next
+                                                  .spot,
+                                          attempt:
+                                              response
+                                                  .next
+                                                  .attempt,
+                                          total:
+                                              response
+                                                  .next
+                                                  .total
+                                      )
                               }
                           }
+
                       } catch {
+
                           await MainActor.run {
+
                               state = current
-                              errorMessage = "Shot was not recorded."
+
+                              errorMessage =
+                                  "Shot was not recorded."
                           }
                       }
                   }
