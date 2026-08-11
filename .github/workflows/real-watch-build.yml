@@ -48,6 +48,25 @@ jobs:
           }
           EOF
 
+          cat > HotShotsWatchTest/HotShotsWatchTest/Info.plist <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleDisplayName</key>
+              <string>HotShots</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.hotshots.watchtest</string>
+              <key>CFBundleName</key>
+              <string>HotShots</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>WKApplication</key>
+              <true/>
+          </dict>
+          </plist>
+          EOF
+
       - name: Create Xcode project
         run: |
           brew install xcodegen
@@ -65,9 +84,12 @@ jobs:
               deploymentTarget: "26.0"
               sources:
                 - HotShotsWatchTest
+              info:
+                path: HotShotsWatchTest/Info.plist
               settings:
                 base:
                   PRODUCT_BUNDLE_IDENTIFIER: com.hotshots.watchtest
+                  CODE_SIGNING_ALLOWED: NO
           EOF
 
           cd HotShotsWatchTest
